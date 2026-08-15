@@ -19,55 +19,86 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create image directory
-        run: mkdir -p assets/images
-
-      - name: Rebuild hero from independently encoded binary chunks
+      - name: Rebuild and validate hero robustly
         shell: bash
         run: |
-          rm -f assets/images/hero.webp
-          touch assets/images/hero.webp
-          for f in assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64; do
-            echo "Decoding $f ($(wc -c < "$f") chars)"
-            tr -d '\n\r ' < "$f" | base64 --decode >> assets/images/hero.webp
-          done
-          echo "Hero bytes: $(wc -c < assets/images/hero.webp)"
-
-      - name: Materialize uploaded HQ section images when present
-        shell: bash
-        run: |
-          for name in blueprint residence concept; do
-            if compgen -G "assets/hqsrc/$name/*.b64" > /dev/null; then
-              rm -f "assets/images/$name.webp"
-              touch "assets/images/$name.webp"
-              while IFS= read -r -d '' f; do
-                tr -d '\n\r ' < "$f" | base64 --decode >> "assets/images/$name.webp"
-              done < <(find "assets/hqsrc/$name" -maxdepth 1 -type f -name '*.b64' -print0 | sort -z)
-            fi
-          done
-
-      - name: Validate reconstructed images
-        shell: bash
-        run: |
-          test -s assets/images/hero.webp
-          file assets/images/hero.webp
-          ls -lh assets/images
+          mkdir -p assets/images
           python - <<'PY'
+          from pathlib import Path
+          import base64, re
           from PIL import Image
-          im=Image.open('assets/images/hero.webp')
-          print('hero dimensions:', im.size)
-          assert im.size[0] >= 1600 and im.size[1] >= 900, im.size
+
+          files = [Path(f'assets/hero-{i}.b64') for i in range(6)]
+          parts = []
+          for f in files:
+              raw = f.read_bytes()
+              # Remove UTF-8 BOM if one slipped into an uploaded text chunk.
+              if raw.startswith(b'\xef\xbb\xbf'):
+                  raw = raw[3:]
+              txt = raw.decode('ascii', errors='ignore')
+              txt = re.sub(r'[^A-Za-z0-9+/=]', '', txt)
+              parts.append(txt)
+              print(f'{f}: normalized chars={len(txt)}, head={txt[:8]!r}, tail={txt[-8:]!r}')
+
+          # First try the chunks as one continuous Base64 stream.
+          stream = ''.join(parts).replace('=', '')
+          stream += '=' * (-len(stream) % 4)
+          data = base64.b64decode(stream, validate=False)
+          out = Path('assets/images/hero.webp')
+          out.write_bytes(data)
+          print('decoded hero bytes:', len(data), 'header:', data[:12])
+
+          try:
+              im = Image.open(out)
+              im.load()
+          except Exception as exc:
+              raise SystemExit(f'Hero reconstruction is not a valid image: {exc}')
+
+          print('hero format:', im.format, 'dimensions:', im.size)
+          if im.size[0] < 1600 or im.size[1] < 900:
+              raise SystemExit(f'Hero is still too small: {im.size}')
           PY
 
-      - name: Commit materialized images
+      - name: Materialize uploaded HQ section images
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64, re
+          from PIL import Image
+
+          for name in ('blueprint','residence','concept'):
+              folder = Path('assets/hqsrc') / name
+              files = sorted(folder.glob('*.b64')) if folder.exists() else []
+              if not files:
+                  print(name, ': no HQ chunks yet; keeping current fallback')
+                  continue
+              chunks=[]
+              for f in files:
+                  raw=f.read_bytes()
+                  if raw.startswith(b'\xef\xbb\xbf'):
+                      raw=raw[3:]
+                  chunks.append(re.sub(r'[^A-Za-z0-9+/=]', '', raw.decode('ascii',errors='ignore')))
+              stream=''.join(chunks).replace('=','')
+              stream += '=' * (-len(stream)%4)
+              data=base64.b64decode(stream, validate=False)
+              out=Path('assets/images')/f'{name}.webp'
+              out.write_bytes(data)
+              im=Image.open(out); im.load()
+              print(name, im.format, im.size, len(data))
+              if max(im.size) < 1600:
+                  raise SystemExit(f'{name} HQ image is too small: {im.size}')
+          PY
+
+      - name: Commit verified image files
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add assets/images
           if git diff --cached --quiet; then
-            echo "Images already materialized."
+            echo "No verified image changes to commit."
           else
-            git commit -m "Rebuild Rekaz hero at full resolution"
+            git commit -m "Materialize verified Rekaz HQ images"
             git push
           fi
