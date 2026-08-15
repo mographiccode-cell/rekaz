@@ -23,9 +23,10 @@ jobs:
       - name: Rebuild HQ hero as a real image file
         shell: bash
         run: |
-          cat assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64 \
-            | tr -d '\n\r ' \
-            | base64 --decode > assets/images/hero.webp
+          : > assets/images/hero.webp
+          for f in assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64; do
+            tr -d '\n\r ' < "$f" | base64 --decode >> assets/images/hero.webp
+          done
 
       - name: Copy section images into dedicated folder
         shell: bash
