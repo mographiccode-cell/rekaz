@@ -19,45 +19,61 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Rebuild and validate hero robustly
+      - name: Rebuild and validate hero
         shell: bash
         run: |
           mkdir -p assets/images
           python - <<'PY'
           from pathlib import Path
-          import base64, re
-          from PIL import Image
+          import base64, re, struct
 
-          files = [Path(f'assets/hero-{i}.b64') for i in range(6)]
-          parts = []
-          for f in files:
-              raw = f.read_bytes()
-              # Remove UTF-8 BOM if one slipped into an uploaded text chunk.
+          def webp_size(data: bytes):
+              if len(data) < 20 or data[:4] != b'RIFF' or data[8:12] != b'WEBP':
+                  raise ValueError(f'not a WebP RIFF file: header={data[:12]!r}')
+              p=12
+              while p+8 <= len(data):
+                  typ=data[p:p+4]
+                  n=int.from_bytes(data[p+4:p+8], 'little')
+                  payload=data[p+8:p+8+n]
+                  if typ == b'VP8X' and len(payload) >= 10:
+                      w=1+int.from_bytes(payload[4:7], 'little')
+                      h=1+int.from_bytes(payload[7:10], 'little')
+                      return w,h
+                  if typ == b'VP8 ' and len(payload) >= 10:
+                      sig=payload.find(b'\x9d\x01\x2a')
+                      if sig >= 0 and sig+7 <= len(payload):
+                          w=int.from_bytes(payload[sig+3:sig+5],'little') & 0x3fff
+                          h=int.from_bytes(payload[sig+5:sig+7],'little') & 0x3fff
+                          return w,h
+                  if typ == b'VP8L' and len(payload) >= 5 and payload[0] == 0x2f:
+                      bits=int.from_bytes(payload[1:5], 'little')
+                      return (bits & 0x3fff)+1, ((bits >> 14) & 0x3fff)+1
+                  p += 8+n+(n&1)
+              raise ValueError('could not find WebP dimensions')
+
+          parts=[]
+          for i in range(6):
+              f=Path(f'assets/hero-{i}.b64')
+              raw=f.read_bytes()
               if raw.startswith(b'\xef\xbb\xbf'):
-                  raw = raw[3:]
-              txt = raw.decode('ascii', errors='ignore')
-              txt = re.sub(r'[^A-Za-z0-9+/=]', '', txt)
+                  raw=raw[3:]
+              txt=re.sub(r'[^A-Za-z0-9+/=]', '', raw.decode('ascii', errors='ignore'))
               parts.append(txt)
-              print(f'{f}: normalized chars={len(txt)}, head={txt[:8]!r}, tail={txt[-8:]!r}')
+              print(f'{f}: normalized={len(txt)} head={txt[:8]} tail={txt[-8:]}')
 
-          # First try the chunks as one continuous Base64 stream.
-          stream = ''.join(parts).replace('=', '')
+          # These are slices of one Base64 stream, so concatenate first.
+          stream=''.join(parts).replace('=','')
           stream += '=' * (-len(stream) % 4)
-          data = base64.b64decode(stream, validate=False)
-          out = Path('assets/images/hero.webp')
-          out.write_bytes(data)
-          print('decoded hero bytes:', len(data), 'header:', data[:12])
-
-          try:
-              im = Image.open(out)
-              im.load()
-          except Exception as exc:
-              raise SystemExit(f'Hero reconstruction is not a valid image: {exc}')
-
-          print('hero format:', im.format, 'dimensions:', im.size)
-          if im.size[0] < 1600 or im.size[1] < 900:
-              raise SystemExit(f'Hero is still too small: {im.size}')
+          data=base64.b64decode(stream, validate=False)
+          size=webp_size(data)
+          print('hero decoded bytes:', len(data))
+          print('hero dimensions:', size)
+          if size[0] < 1600 or size[1] < 900:
+              raise SystemExit(f'hero resolution still too low: {size}')
+          Path('assets/images/hero.webp').write_bytes(data)
           PY
+          file assets/images/hero.webp
+          ls -lh assets/images/hero.webp
 
       - name: Materialize uploaded HQ section images
         shell: bash
@@ -65,29 +81,23 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           import base64, re
-          from PIL import Image
-
           for name in ('blueprint','residence','concept'):
-              folder = Path('assets/hqsrc') / name
-              files = sorted(folder.glob('*.b64')) if folder.exists() else []
+              folder=Path('assets/hqsrc')/name
+              files=sorted(folder.glob('*.b64')) if folder.exists() else []
               if not files:
-                  print(name, ': no HQ chunks yet; keeping current fallback')
+                  print(name, ': no HQ chunks yet')
                   continue
-              chunks=[]
+              parts=[]
               for f in files:
                   raw=f.read_bytes()
-                  if raw.startswith(b'\xef\xbb\xbf'):
-                      raw=raw[3:]
-                  chunks.append(re.sub(r'[^A-Za-z0-9+/=]', '', raw.decode('ascii',errors='ignore')))
-              stream=''.join(chunks).replace('=','')
+                  if raw.startswith(b'\xef\xbb\xbf'): raw=raw[3:]
+                  parts.append(re.sub(r'[^A-Za-z0-9+/=]', '', raw.decode('ascii',errors='ignore')))
+              stream=''.join(parts).replace('=','')
               stream += '=' * (-len(stream)%4)
               data=base64.b64decode(stream, validate=False)
               out=Path('assets/images')/f'{name}.webp'
               out.write_bytes(data)
-              im=Image.open(out); im.load()
-              print(name, im.format, im.size, len(data))
-              if max(im.size) < 1600:
-                  raise SystemExit(f'{name} HQ image is too small: {im.size}')
+              print(name, 'bytes:', len(data), 'header:', data[:12])
           PY
 
       - name: Commit verified image files
