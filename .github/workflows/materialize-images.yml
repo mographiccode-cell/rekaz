@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - '.github/workflows/materialize-images.yml'
+      - 'assets/hero-*.b64'
+      - 'assets/hqsrc/**'
   workflow_dispatch:
 
 permissions:
@@ -20,30 +22,40 @@ jobs:
       - name: Create image directory
         run: mkdir -p assets/images
 
-      - name: Rebuild HQ hero as a real image file
+      - name: Rebuild HQ hero from continuous Base64 chunks
         shell: bash
         run: |
-          : > assets/images/hero.webp
-          for f in assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64; do
-            tr -d '\n\r ' < "$f" | base64 --decode >> assets/images/hero.webp
+          cat assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64 \
+            | tr -d '\n\r ' \
+            | base64 --decode > assets/images/hero.webp
+
+      - name: Materialize uploaded HQ section images when present
+        shell: bash
+        run: |
+          for name in blueprint residence concept; do
+            if compgen -G "assets/hqsrc/$name/*.b64" > /dev/null; then
+              find "assets/hqsrc/$name" -maxdepth 1 -type f -name '*.b64' -print0 \
+                | sort -z \
+                | xargs -0 cat \
+                | tr -d '\n\r ' \
+                | base64 --decode > "assets/images/$name.webp"
+            fi
           done
 
-      - name: Copy section images into dedicated folder
+      - name: Keep current section fallbacks if HQ source is not present
         shell: bash
         run: |
-          cp assets/blueprint.jpg assets/images/blueprint.jpg
-          cp assets/concept.jpg assets/images/concept.jpg
-          cp assets/residence.jpg assets/images/residence.jpg
+          test -s assets/images/blueprint.webp || cp assets/blueprint.jpg assets/images/blueprint.jpg
+          test -s assets/images/residence.webp || cp assets/residence.jpg assets/images/residence.jpg
+          test -s assets/images/concept.webp || cp assets/concept.jpg assets/images/concept.jpg
 
-      - name: Validate files
+      - name: Validate reconstructed hero
         shell: bash
         run: |
           test -s assets/images/hero.webp
-          test -s assets/images/blueprint.jpg
-          test -s assets/images/concept.jpg
-          test -s assets/images/residence.jpg
-          file assets/images/*
-          ls -lh assets/images
+          file assets/images/hero.webp
+          ls -lh assets/images/hero.webp
+          identify assets/images/hero.webp || true
 
       - name: Commit materialized images
         shell: bash
@@ -54,6 +66,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Images already materialized."
           else
-            git commit -m "Add real Rekaz image files"
+            git commit -m "Rebuild Rekaz HQ images correctly"
             git push
           fi
