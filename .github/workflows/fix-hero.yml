@@ -1,0 +1,53 @@
+name: Fix Rekaz Hero
+
+on:
+  push:
+    paths:
+      - '.hero-upload/**'
+      - '.github/workflows/fix-hero.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-hero:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rebuild verified hero asset
+        shell: bash
+        run: |
+          cat .hero-upload/00.bin .hero-upload/01.bin .hero-upload/02.bin .hero-upload/03.bin .hero-upload/04.bin > assets/images/hero.avif
+          test "$(wc -c < assets/images/hero.avif)" -eq 28644
+          echo "0048807f833bf4aa8ed6a8cb7bd3538adf2876ed6a9ba7be33bc836ef2a742a7  assets/images/hero.avif" | sha256sum -c -
+          file assets/images/hero.avif
+
+      - name: Point hero to verified image and harden stacking
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('assets/images/hero.webp?v=6', 'assets/images/hero.avif?v=8')
+          s = s.replace('.hero{height:min(940px,100svh);min-height:790px;position:relative;overflow:hidden;background:#dfe9ef}', ".hero{height:min(940px,100svh);min-height:790px;position:relative;overflow:hidden;background:#dfe9ef url('assets/images/hero.avif?v=8') center center/cover no-repeat}")
+          s = s.replace('.hero-image{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center center}', '.hero-image{position:absolute;inset:0;z-index:1;width:100%;height:100%;object-fit:cover;object-position:65% center}')
+          s = s.replace('.hero:after{content:"";position:absolute;inset:0;background:', '.hero:after{content:"";position:absolute;inset:0;z-index:2;background:')
+          p.write_text(s, encoding='utf-8')
+          PY
+          grep -q 'assets/images/hero.avif?v=8' index.html
+          grep -q 'z-index:1' index.html
+          grep -q 'z-index:2' index.html
+
+      - name: Commit verified fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/images/hero.avif index.html
+          git commit -m "Fix Rekaz hero with verified architectural image"
+          git push
