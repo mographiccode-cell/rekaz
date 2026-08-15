@@ -22,40 +22,42 @@ jobs:
       - name: Create image directory
         run: mkdir -p assets/images
 
-      - name: Rebuild HQ hero from continuous Base64 chunks
+      - name: Rebuild hero from independently encoded binary chunks
         shell: bash
         run: |
-          cat assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64 \
-            | tr -d '\n\r ' \
-            | base64 --decode > assets/images/hero.webp
+          rm -f assets/images/hero.webp
+          touch assets/images/hero.webp
+          for f in assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64; do
+            echo "Decoding $f ($(wc -c < "$f") chars)"
+            tr -d '\n\r ' < "$f" | base64 --decode >> assets/images/hero.webp
+          done
+          echo "Hero bytes: $(wc -c < assets/images/hero.webp)"
 
       - name: Materialize uploaded HQ section images when present
         shell: bash
         run: |
           for name in blueprint residence concept; do
             if compgen -G "assets/hqsrc/$name/*.b64" > /dev/null; then
-              find "assets/hqsrc/$name" -maxdepth 1 -type f -name '*.b64' -print0 \
-                | sort -z \
-                | xargs -0 cat \
-                | tr -d '\n\r ' \
-                | base64 --decode > "assets/images/$name.webp"
+              rm -f "assets/images/$name.webp"
+              touch "assets/images/$name.webp"
+              while IFS= read -r -d '' f; do
+                tr -d '\n\r ' < "$f" | base64 --decode >> "assets/images/$name.webp"
+              done < <(find "assets/hqsrc/$name" -maxdepth 1 -type f -name '*.b64' -print0 | sort -z)
             fi
           done
 
-      - name: Keep current section fallbacks if HQ source is not present
-        shell: bash
-        run: |
-          test -s assets/images/blueprint.webp || cp assets/blueprint.jpg assets/images/blueprint.jpg
-          test -s assets/images/residence.webp || cp assets/residence.jpg assets/images/residence.jpg
-          test -s assets/images/concept.webp || cp assets/concept.jpg assets/images/concept.jpg
-
-      - name: Validate reconstructed hero
+      - name: Validate reconstructed images
         shell: bash
         run: |
           test -s assets/images/hero.webp
           file assets/images/hero.webp
-          ls -lh assets/images/hero.webp
-          identify assets/images/hero.webp || true
+          ls -lh assets/images
+          python - <<'PY'
+          from PIL import Image
+          im=Image.open('assets/images/hero.webp')
+          print('hero dimensions:', im.size)
+          assert im.size[0] >= 1600 and im.size[1] >= 900, im.size
+          PY
 
       - name: Commit materialized images
         shell: bash
@@ -66,6 +68,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Images already materialized."
           else
-            git commit -m "Rebuild Rekaz HQ images correctly"
+            git commit -m "Rebuild Rekaz hero at full resolution"
             git push
           fi
