@@ -1,0 +1,58 @@
+name: Materialize Rekaz Images
+
+on:
+  push:
+    paths:
+      - '.github/workflows/materialize-images.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-images:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create image directory
+        run: mkdir -p assets/images
+
+      - name: Rebuild HQ hero as a real image file
+        shell: bash
+        run: |
+          cat assets/hero-0.b64 assets/hero-1.b64 assets/hero-2.b64 assets/hero-3.b64 assets/hero-4.b64 assets/hero-5.b64 \
+            | tr -d '\n\r ' \
+            | base64 --decode > assets/images/hero.webp
+
+      - name: Copy section images into dedicated folder
+        shell: bash
+        run: |
+          cp assets/blueprint.jpg assets/images/blueprint.jpg
+          cp assets/concept.jpg assets/images/concept.jpg
+          cp assets/residence.jpg assets/images/residence.jpg
+
+      - name: Validate files
+        shell: bash
+        run: |
+          test -s assets/images/hero.webp
+          test -s assets/images/blueprint.jpg
+          test -s assets/images/concept.jpg
+          test -s assets/images/residence.jpg
+          file assets/images/*
+          ls -lh assets/images
+
+      - name: Commit materialized images
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/images
+          if git diff --cached --quiet; then
+            echo "Images already materialized."
+          else
+            git commit -m "Add real Rekaz image files"
+            git push
+          fi
